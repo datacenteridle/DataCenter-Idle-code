@@ -149,7 +149,7 @@ public class computer : MonoBehaviour
             {
                 hasTyped = false;
                 // Optionnel : masquer la bulle immédiatement si la chaleur baisse ?
-                // bulle.SetActive(false); 
+                bulle.SetActive(false); 
             }
         }
     }

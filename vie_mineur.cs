@@ -148,7 +148,7 @@ public class vie_mineur : MonoBehaviour
                 
 
                 PlayerPrefs.SetFloat(transform.parent.name + "VieEnfant", viediminue / TotalTime);
-                
+                PlayerPrefs.Save();
                 yield return new WaitForSeconds(0.1f);
             }
             else

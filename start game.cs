@@ -1,17 +1,15 @@
-
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using System;
 using System.IO;
 using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
 
 public class startgame : MonoBehaviour
 {
-    public class ServeursList
-    {
-        public Serveur[] serveurs;
-    }
+    // ========== CLASSES ==========
     [System.Serializable]
     public class Serveur
     {
@@ -22,10 +20,69 @@ public class startgame : MonoBehaviour
         public int heat;
         public int cell;
     }
+
+    [System.Serializable]
+    public class ServeursList
+    {
+        public Serveur[] serveurs;
+    }
+
+    private class MinerInfo
+    {
+        public string spriteName;
+        public int upgradeSpeed;
+        public int upgradeHeat;
+        public float vie;
+        public double baseSpeed;
+        public int baseHeat;
+        public int cell;
+    }
+
+    // ========== CACHE STATIQUE (partagé entre toutes les instances) ==========
+    private static ServeursList cachedServeurData;
+    private static Dictionary<string, Serveur> serveurByTexture = new Dictionary<string, Serveur>();
+    private static bool dataLoaded = false;
+
+    // ========== CACHE LOCAL ==========
+    private Dictionary<string, MinerInfo> activeMiners = new Dictionary<string, MinerInfo>();
+    private bool needsRefresh = true;
+
+    // Variables de calcul
     private double speed = 0f;
     private double speedsansboost = 0f;
     private float heat = 0f;
+    private float boost;
     private bool tooHot = false;
+    private double earnedMoney;
+    private bool dejachek = false;
+
+    // Cache UI (évite de recalculer si la valeur n'a pas changé)
+    private string lastArgentText = "";
+    private string lastSpeedText = "";
+    private string lastHeatText = "";
+    private string lastDiamandText = "";
+    private double lastArgentValue = -1;
+    private string lastDiamandValue = "";
+
+    // Cache PlayerPrefs
+    private float cachedMusicVolume;
+    private float cachedSonVolume;
+    private string cachedLanguage = "";
+    private float lastMusicVolumeCheck = 0f;
+    private float lastSonVolumeCheck = 0f;
+
+    // Composants UI (cachés)
+    private TextMeshProUGUI argentText;
+    private RectTransform argentRect;
+    private TextMeshProUGUI speedboxText;
+    private TextMeshProUGUI heatboxText;
+    private RectTransform heatboxRect;
+    private TextMeshProUGUI diamandboxText;
+    private RectTransform diamandboxRect;
+    private Image menuRougeImage;
+
+    // ========== RÉFÉRENCES PUBLIQUES ==========
+    [Header("UI References")]
     public GameObject argent;
     public GameObject speedbox;
     public GameObject heatbox;
@@ -33,226 +90,417 @@ public class startgame : MonoBehaviour
     public GameObject menu_rouge;
     public GameObject temps;
     public GameObject earned;
-    public unite uniteScript;
     public Transform canvasTransform;
-    private double earnedMoney;
     public FadeUI_rig canva;
-    private float f(float t) => 1f - Mathf.Exp(-0.0005f * t);
+
+    [Header("Scripts")]
+    public unite uniteScript;
+    public user user;
+
+    [Header("Audio")]
     public AudioClip musique;
     public AudioClip alarm;
     public AudioClip arrivebutton;
     private AudioSource audioSource;
     private AudioSource alarmSource;
     private AudioSource audioarrive;
-    private float boost;
-    private string jour;
-    private bool dejachek = false;
 
-
-    [Header("machine arrive")]
+    [Header("Machine Arrive")]
     public GameObject listarrive;
     public GameObject prefabarrive;
     public Sprite upspeed;
     public Sprite upheat;
-    
-    [Header("piece volante")]
+
+    [Header("Pièce Volante")]
     public GameObject piecePrefab;
     public GameObject departargent;
-    public user user;
 
+    // ========== AWAKE ==========
     void Awake()
     {
-        // Désactive la limite automatique de frame
         Application.targetFrameRate = 60;
-
-        // Active le mode “vSync Off” pour que targetFrameRate soit respecté
         QualitySettings.vSyncCount = 0;
+
+        // Charge les données serveur UNE SEULE FOIS
+        if (!dataLoaded)
+        {
+            LoadServeurData();
+            dataLoaded = true;
+        }
     }
 
-    private void Update()
+    // ========== START ==========
+    void Start()
     {
+        // Cache les composants UI
+        CacheUIComponents();
 
-        //PlayerPrefs.DeleteAll();
-        //PlayerPrefs.Save();
-        //string pathtest = Path.Combine(Application.persistentDataPath, "box.json");
+        // Init PlayerPrefs si nécessaire
+        InitPlayerPrefs();
 
-        //SpriteData emptyData = new SpriteData { spriteCounts = new SpriteCount[0] };
-        //string emptyJson = JsonUtility.ToJson(emptyData, true);
+        // Audio
+        audioSource = gameObject.AddComponent<AudioSource>();
+        audioSource.clip = musique;
+        audioSource.loop = true;
+        audioSource.playOnAwake = true;
+        audioSource.volume = PlayerPrefs.GetFloat("music", 0.5f);
+        audioSource.Play();
 
-        //File.WriteAllText(pathtest, emptyJson);
+        // Cache volumes
+        cachedMusicVolume = PlayerPrefs.GetFloat("music", 0.5f);
+        cachedSonVolume = PlayerPrefs.GetFloat("sons", 0.5f);
+        cachedLanguage = PlayerPrefs.GetString("language", "English");
 
-        //PlayerPrefs.SetString("argent", "1220703125000000");
-        //PlayerPrefs.Save();
-        //PlayerPrefs.SetString("Diamand", "100");
-        //PlayerPrefs.Save();
+        // Refresh mineurs
+        RefreshActiveMiners();
+
+        // Coroutine de décrémentation du click
+        StartCoroutine(CallFunctionRepeatedly());
+    }
+
+    // ========== CACHE UI COMPONENTS ==========
+    private void CacheUIComponents()
+    {
+        argentText = argent.GetComponent<TextMeshProUGUI>();
+        argentRect = argentText.rectTransform;
+        speedboxText = speedbox.GetComponent<TextMeshProUGUI>();
+        heatboxText = heatbox.GetComponent<TextMeshProUGUI>();
+        heatboxRect = heatboxText.rectTransform;
+        diamandboxText = diamandbox.GetComponent<TextMeshProUGUI>();
+        diamandboxRect = diamandboxText.rectTransform;
+        menuRougeImage = menu_rouge.GetComponent<Image>();
+    }
+
+    // ========== INIT PLAYERPREFS ==========
+    private void InitPlayerPrefs()
+    {
         if (!PlayerPrefs.HasKey("argent"))
         {
             PlayerPrefs.SetString("argent", "0");
-            PlayerPrefs.Save();
         }
         if (!PlayerPrefs.HasKey("Diamand"))
         {
             PlayerPrefs.SetString("Diamand", "0");
-            PlayerPrefs.Save();
         }
         if (!PlayerPrefs.HasKey("heat"))
         {
             PlayerPrefs.SetString("heat", "0");
-            PlayerPrefs.Save();
         }
+        if (!PlayerPrefs.HasKey("Click"))
+        {
+            PlayerPrefs.SetString("Click", "0");
+        }
+        if (!PlayerPrefs.HasKey("Langue") || (PlayerPrefs.GetString("Langue", "") != "Francais" && PlayerPrefs.GetString("Langue", "") != "English"))
+        {
+            SystemLanguage sysLang = Application.systemLanguage;
+            string langue = sysLang == SystemLanguage.French ? "Francais" : "English";
+            PlayerPrefs.SetString("Langue", langue);
+        }
+        PlayerPrefs.Save();
+    }
+
+    // ========== CHARGE LES DONNÉES SERVEUR (UNE SEULE FOIS) ==========
+    private static void LoadServeurData()
+    {
+        TextAsset path = Resources.Load<TextAsset>("Mineur_data");
+        if (path == null)
+        {
+            Debug.LogError("Mineur_data introuvable dans Resources !");
+            return;
+        }
+
+        cachedServeurData = JsonUtility.FromJson<ServeursList>(path.text);
+
+        // Crée un dictionnaire pour accès O(1)
+        serveurByTexture.Clear();
+        foreach (var serveur in cachedServeurData.serveurs)
+        {
+            serveurByTexture[serveur.texture2D] = serveur;
+        }
+    }
+
+    // ========== REFRESH MINEURS ACTIFS (appelé seulement quand nécessaire) ==========
+    public void RefreshActiveMiners()
+    {
+        activeMiners.Clear();
+
+        foreach (Transform child in canvasTransform)
+        {
+            string imageName = PlayerPrefs.GetString(child.name + "NomImageEnfant", "");
+            if (string.IsNullOrEmpty(imageName)) continue;
+
+            int upgradeSpeed = PlayerPrefs.GetInt(child.name + "UpSpeedEnfant", 0);
+            int upgradeHeat = PlayerPrefs.GetInt(child.name + "UpHeatEnfant", 0);
+            float vie = PlayerPrefs.GetFloat(child.name + "VieEnfant", 1);
+
+            if (serveurByTexture.TryGetValue(imageName, out Serveur serveur))
+            {
+                
+                activeMiners[child.name] = new MinerInfo
+                {
+                    spriteName = imageName,
+                    upgradeSpeed = upgradeSpeed,
+                    upgradeHeat = upgradeHeat,
+                    vie = vie,
+                    baseSpeed = serveur.vitesse,
+                    baseHeat = serveur.heat,
+                    cell = serveur.cell
+                };
+            }
+        }
+
+        needsRefresh = false;
+    }
+
+    // ========== UPDATE ==========
+    void Update()
+    {
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
-        argent.GetComponent<TextMeshProUGUI>().text = uniteScript.UniteMethodP(double.Parse(user.getargentstring(), System.Globalization.CultureInfo.InvariantCulture));
-        LayoutRebuilder.ForceRebuildLayoutImmediate(argent.GetComponent<TextMeshProUGUI>().rectTransform);
 
-        diamandbox.GetComponent<TextMeshProUGUI>().text = PlayerPrefs.GetString("Diamand");
-        LayoutRebuilder.ForceRebuildLayoutImmediate(diamandbox.GetComponent<TextMeshProUGUI>().rectTransform);
+        // Refresh les mineurs si nécessaire
+        if (needsRefresh)
+        {
+            RefreshActiveMiners();
+        }
 
+        // Met à jour les volumes audio (seulement toutes les 0.5s)
+        if (Time.time - lastMusicVolumeCheck > 0.5f)
+        {
+            cachedMusicVolume = PlayerPrefs.GetFloat("music", 0.5f);
+            audioSource.volume = cachedMusicVolume * 0.4f;
+            lastMusicVolumeCheck = Time.time;
+        }
+
+        if (Time.time - lastSonVolumeCheck > 0.5f)
+        {
+            cachedSonVolume = PlayerPrefs.GetFloat("sons", 0.5f);
+            lastSonVolumeCheck = Time.time;
+        }
+
+        // Calcule les stats (speed, heat)
+        CalculateStats();
+
+        // Met à jour l'UI seulement si changement
+        UpdateUI();
+
+        // Gestion chaleur
+        HandleHeatWarning();
+
+        // Vérifie best speed
+        CheckBestSpeed();
+    }
+
+    // ========== CALCUL DES STATS ==========
+    private void CalculateStats()
+    {
         speed = 0f;
         speedsansboost = 0f;
         heat = 0f;
-        audioSource.volume = PlayerPrefs.GetFloat("music") * 0.4f;
-        // Parcours tous les enfants directs
-        foreach (Transform child in canvasTransform)
+
+        boost = Mathf.Min(float.Parse(PlayerPrefs.GetString("Click", "0")) * 10f / 3f, 50f);
+
+        foreach (var miner in activeMiners.Values)
         {
-            if (PlayerPrefs.GetString(child.name + "NomImageEnfant") != "")
-            {
-                string spriteName = PlayerPrefs.GetString(child.name + "NomImageEnfant");
+            if (miner.vie <= 0) continue;
 
-                int upgradespeed = PlayerPrefs.GetInt(child.name + "UpSpeedEnfant", 0);
-                int upgradeheat = PlayerPrefs.GetInt(child.name + "UpHeatEnfant", 0);
-                float vie = PlayerPrefs.GetFloat(child.name + "VieEnfant", 1);
-                TextAsset path = Resources.Load<TextAsset>("Mineur_data");
-                string json = path.text;
+            // Chaleur
+            int heatValue = miner.baseHeat;
+            float heatMultiplier = GetValueHeat(miner.upgradeHeat);
+            heat += heatValue > 0 ? heatValue * (1 - heatMultiplier) : heatValue * (1 + heatMultiplier);
 
-                ServeursList data = JsonUtility.FromJson<ServeursList>(json);
-                if (vie > 0)
-                {
-                    foreach (var serveur in data.serveurs)
-                    {
-
-                        if (serveur.texture2D == spriteName)
-                        {
-                            if (serveur.heat > 0)
-                            {
-                                heat += serveur.heat - (serveur.heat * GetValueHeat(upgradeheat));
-                            }
-                            else
-                            {
-                                heat += serveur.heat + (serveur.heat * GetValueHeat(upgradeheat));
-                            }
-
-                            boost = float.Parse(PlayerPrefs.GetString("Click")) * 10f / 3f;
-                            if (boost > 50f)
-                            {
-                                boost = 50f;
-                            }
-                            double speedavecup = serveur.vitesse + (serveur.vitesse * GetValueSpeed(upgradespeed));
-                            speedsansboost += speedavecup;
-                            speed += speedavecup + speedavecup * (boost / 100f);
-
-                        }
-                    }
-                }
-            }
+            // Vitesse
+            double speedValue = miner.baseSpeed * (1 + GetValueSpeed(miner.upgradeSpeed));
+            speedsansboost += speedValue;
+            speed += speedValue * (1 + boost / 100f);
         }
+
         PlayerPrefs.SetString("heat", heat.ToString());
-        PlayerPrefs.Save();
+        PlayerPrefs.SetString("speedtosave", speedsansboost.ToString(CultureInfo.InvariantCulture));
+    }
 
+    // ========== UPDATE UI (seulement si changement) ==========
+    private void UpdateUI()
+    {
+        // Argent
+        double currentArgent = double.Parse(user.getargentstring(), CultureInfo.InvariantCulture);
+        if (Math.Abs(currentArgent - lastArgentValue) > 0.01)
+        {
+            string newArgent = uniteScript.UniteMethodP(currentArgent);
+            if (newArgent != lastArgentText)
+            {
+                argentText.text = newArgent;
+                LayoutRebuilder.ForceRebuildLayoutImmediate(argentRect);
+                lastArgentText = newArgent;
+            }
+            lastArgentValue = currentArgent;
+        }
 
-        
+        // Vitesse
+        string newSpeed = uniteScript.UniteMethodV(speed);
+        if (newSpeed != lastSpeedText)
+        {
+            speedboxText.text = newSpeed;
+            lastSpeedText = newSpeed;
+        }
+
+        // Chaleur
+        string newHeat = heat.ToString("F0") + "/120";
+        if (newHeat != lastHeatText)
+        {
+            heatboxText.text = newHeat;
+            LayoutRebuilder.ForceRebuildLayoutImmediate(heatboxRect);
+            lastHeatText = newHeat;
+        }
+
+        // Diamants
+        string currentDiamand = PlayerPrefs.GetString("Diamand", "0");
+        if (currentDiamand != lastDiamandValue)
+        {
+            if (currentDiamand != lastDiamandText)
+            {
+                diamandboxText.text = currentDiamand;
+                LayoutRebuilder.ForceRebuildLayoutImmediate(diamandboxRect);
+                lastDiamandText = currentDiamand;
+            }
+            lastDiamandValue = currentDiamand;
+        }
+    }
+
+    // ========== GESTION ALARME CHALEUR ==========
+    private void HandleHeatWarning()
+    {
         if (heat > 120)
         {
-
             if (!tooHot)
             {
-
                 alarmSource = gameObject.AddComponent<AudioSource>();
                 alarmSource.clip = alarm;
-                alarmSource.loop = true;       // 🔁 boucle activée
-                alarmSource.playOnAwake = true; // joue dès le Start
-                alarmSource.volume = 0.5f * PlayerPrefs.GetFloat("sons");
+                alarmSource.loop = true;
+                alarmSource.playOnAwake = true;
+                alarmSource.volume = 0.5f * cachedSonVolume;
                 alarmSource.Play();
+                tooHot = true;
             }
-            alarmSource.volume = 0.5f * PlayerPrefs.GetFloat("sons");
-            tooHot = true;
-
+            alarmSource.volume = 0.5f * cachedSonVolume;
             alterne_alpha();
-
         }
         else
         {
             if (tooHot)
             {
-                alarmSource.Stop();
+                if (alarmSource != null)
+                {
+                    alarmSource.Stop();
+                }
+                tooHot = false;
             }
-            tooHot = false;
 
-            var spriteRenderer = menu_rouge.GetComponent<Image>();
-            if (spriteRenderer != null)
+            if (menuRougeImage != null)
             {
-                Color c = spriteRenderer.color;
+                Color c = menuRougeImage.color;
                 c.a = 0f;
-                spriteRenderer.color = c;
+                menuRougeImage.color = c;
             }
         }
-
-        speedbox.GetComponent<TextMeshProUGUI>().text = uniteScript.UniteMethodV(speed);
-        PlayerPrefs.SetString("speedtosave", speedsansboost.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        PlayerPrefs.Save();
-        heatbox.GetComponent<TextMeshProUGUI>().text = heat.ToString() + "/120";
-        LayoutRebuilder.ForceRebuildLayoutImmediate(heatbox.GetComponent<TextMeshProUGUI>().rectTransform);
-
-
-        if (!PlayerPrefs.HasKey("Langue") || (PlayerPrefs.GetString("Langue", "") != "Francais" && PlayerPrefs.GetString("Langue", "") != "English"))
-        {
-            SystemLanguage sysLang = Application.systemLanguage;
-            string langue = "English"; // Valeur par défaut
-
-            if (sysLang == SystemLanguage.French)
-                langue = "Francais";
-
-            PlayerPrefs.SetString("Langue", langue);
-            PlayerPrefs.Save();
-        }
-
-        double speedactuel = double.Parse(PlayerPrefs.GetString("speedtosave", "0"), System.Globalization.CultureInfo.InvariantCulture);
-        double bestspeed = double.Parse(PlayerPrefs.GetString("Bestspeed", "0"), System.Globalization.CultureInfo.InvariantCulture);
-        if (speedactuel > bestspeed)
-        {
-            PlayerPrefs.SetString("Bestspeed", speedactuel.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            PlayerPrefs.Save();
-        }
-        
     }
 
     void alterne_alpha()
     {
-        
-        var spriteRenderer = menu_rouge.GetComponent<Image>();
-        if (spriteRenderer != null)
+        if (menuRougeImage != null)
         {
-            Color c = spriteRenderer.color;
-            // PingPong fait un aller-retour entre 0 et 1
-            c.a = Mathf.PingPong(Time.time/1.2f, 0.8f) + 0.2f;
-            spriteRenderer.color = c;
+            Color c = menuRougeImage.color;
+            c.a = Mathf.PingPong(Time.time / 1.2f, 0.8f) + 0.2f;
+            menuRougeImage.color = c;
         }
     }
 
+    // ========== VÉRIFIE BEST SPEED ==========
+    private void CheckBestSpeed()
+    {
+        double speedactuel = speedsansboost;
+        double bestspeed = double.Parse(PlayerPrefs.GetString("Bestspeed", "0"), CultureInfo.InvariantCulture);
+        if (speedactuel > bestspeed)
+        {
+            PlayerPrefs.SetString("Bestspeed", speedactuel.ToString(CultureInfo.InvariantCulture));
+        }
+    }
 
+    // ========== COROUTINE DÉCRÉMENTATION CLICK ==========
+    IEnumerator CallFunctionRepeatedly()
+    {
+        while (true)
+        {
+            decrease();
+            yield return new WaitForSeconds(0.5f); // Réduit de 0.1s à 0.5s
+        }
+    }
 
+    void decrease()
+    {
+        float value = float.Parse(PlayerPrefs.GetString("Click", "0"));
+
+        if (value >= 0.01f && value <= 15f)
+        {
+            value -= 0.35f * 0.5f * 5f; // Compense le passage de 0.1s à 0.5s
+        }
+        else if (value >= 15f)
+        {
+            value -= 0.2f * 0.5f * 5f;
+        }
+
+        if (value < 0f) value = 0f;
+
+        PlayerPrefs.SetString("Click", value.ToString());
+    }
+
+    // ========== CLICK ==========
+    public void Click()
+    {
+        PlayerPrefs.SetString("Clicktotaldujour", (double.Parse(PlayerPrefs.GetString("Clicktotaldujour", "0")) + 1).ToString());
+
+        if (float.Parse(PlayerPrefs.GetString("Click", "0")) <= 30f)
+        {
+            PlayerPrefs.SetString("Click", (float.Parse(PlayerPrefs.GetString("Click", "0")) + 0.8f).ToString());
+        }
+    }
+
+    // ========== HELPERS ==========
+    float GetValueSpeed(int input)
+    {
+        switch (input)
+        {
+            case 1: return 0.2f;
+            case 2: return 0.5f;
+            case 3: return 1f;
+            default: return 0f;
+        }
+    }
+
+    float GetValueHeat(int input)
+    {
+        switch (input)
+        {
+            case 1: return 0.1f;
+            case 2: return 0.25f;
+            case 3: return 0.5f;
+            default: return 0f;
+        }
+    }
+
+    // ========== MARQUE COMME "DIRTY" (appelé par d'autres scripts) ==========
+    public void MarkDirty()
+    {
+        needsRefresh = true;
+    }
+
+    // ========== APPLICATION PAUSE/QUIT ==========
     void OnApplicationPause(bool paused)
     {
         if (paused)
-        {   
+        {
             dejachek = false;
-            // L'app a été mise en arrière-plan
             PlayerPrefs.SetString("LastPlayTime", DateTime.Now.ToString("o"));
             PlayerPrefs.Save();
-        }
-        else
-        {
-            // L'app revient au premier plan
-            //CheckIdleTime(); // afficher la page “idle”
         }
     }
 
@@ -263,123 +511,73 @@ public class startgame : MonoBehaviour
         PlayerPrefs.Save();
     }
 
-    void Start()
-    {
-        PlayerPrefs.SetString("Click", "0");
-        PlayerPrefs.Save();
-        audioSource = gameObject.AddComponent<AudioSource>();
-        audioSource.clip = musique;
-        audioSource.loop = true;       // 🔁 boucle activée
-        audioSource.playOnAwake = true; // joue dès le Start
-        audioSource.volume = PlayerPrefs.GetFloat("music");
-        audioSource.Play();
-        //CheckIdleTime();
-        StartCoroutine(CallFunctionRepeatedly());
-        
-
-
-    }
-    IEnumerator CallFunctionRepeatedly()
-    {
-        while (true)
-        {
-            decrease();
-            yield return new WaitForSeconds(0.1f); // attendre 0.1s
-        }
-    }
-    void decrease()
-    {
-        float value = float.Parse(PlayerPrefs.GetString("Click"));
-
-        if (value >= 0.01f && value <= 15f)
-        {
-            value -= 0.35f * Time.deltaTime * 60f; // "équivalent" à 0.05 par frame à 60 FPS
-        }
-        else if (value >= 15f)
-        {
-            value -= 0.2f * Time.deltaTime * 60f;
-        }
-
-        if (value < 0f) value = 0f;
-
-        PlayerPrefs.SetString("Click", value.ToString());
-        PlayerPrefs.Save();
-    }
+    // ========== CHECK IDLE TIME ==========
     void CheckIdleTime()
     {
-        if (dejachek == true)
-        {
-            return;
-        }
+        if (dejachek) return;
         dejachek = true;
-        
-        if (PlayerPrefs.HasKey("Didactitiel"))
-        {
-            if (!PlayerPrefs.HasKey("AllTime"))
-            {
-                PlayerPrefs.SetFloat("AllTime", 0f);
-                PlayerPrefs.Save();
-            }
 
-            string lastTimeString = PlayerPrefs.GetString("LastPlayTime");
-            DateTime lastTime = DateTime.Parse(lastTimeString);
-
-            TimeSpan timeAway = DateTime.Now - lastTime;
-            PlayerPrefs.SetFloat("AllTime", PlayerPrefs.GetFloat("AllTime") + (float)timeAway.TotalMinutes);
-            earnedMoney = Earn(PlayerPrefs.GetFloat("AllTime"));
-            if (earnedMoney == 0f)
-            {
-                PlayerPrefs.SetString("DidactitielSwipe", "true");
-                PlayerPrefs.Save();
-                canva.alpha_debut = 0f;
-                canva.targetAlpha = 0f;
-                PlayerPrefs.SetFloat("AllTime", 0f);
-                PlayerPrefs.Save();
-
-                return;
-            }
-            
-
-            float allMinutes = PlayerPrefs.GetFloat("AllTime");
-            TimeSpan timeSpan = TimeSpan.FromMinutes(allMinutes);
-            temps.GetComponent<TextMeshProUGUI>().text = FormatTime(timeSpan);
-
-            
-            if (PlayerPrefs.GetString("language") == "Francais")
-            earned.GetComponent<TextMeshProUGUI>().text = "Total : " + uniteScript.UniteMethodP(earnedMoney);
-            
-            if (PlayerPrefs.GetString("language") == "English")
-            earned.GetComponent<TextMeshProUGUI>().text = "Total: " + uniteScript.UniteMethodP(earnedMoney);
-
-            LayoutRebuilder.ForceRebuildLayoutImmediate(earned.GetComponent<TextMeshProUGUI>().rectTransform);
-            canva.alpha_debut = 1f;
-            canva.targetAlpha = 1f;
-            canva.canvasGroup.interactable = true;
-            canva.canvasGroup.blocksRaycasts = true;
-            canva.isVisible = true;
-            PlayerPrefs.SetString("DidactitielSwipe", "false");
-            PlayerPrefs.Save();
-        }
-        else
+        if (!PlayerPrefs.HasKey("Didactitiel"))
         {
             PlayerPrefs.SetString("DidactitielSwipe", "false");
             PlayerPrefs.Save();
             canva.alpha_debut = 0f;
             canva.targetAlpha = 0f;
-            canva.isVisible = false;  
-
-
+            canva.isVisible = false;
+            return;
         }
+
+        if (!PlayerPrefs.HasKey("AllTime"))
+        {
+            PlayerPrefs.SetFloat("AllTime", 0f);
+            PlayerPrefs.Save();
+        }
+
+        string lastTimeString = PlayerPrefs.GetString("LastPlayTime");
+        if (string.IsNullOrEmpty(lastTimeString))
+        {
+            PlayerPrefs.SetString("DidactitielSwipe", "true");
+            PlayerPrefs.Save();
+            return;
+        }
+
+        DateTime lastTime = DateTime.Parse(lastTimeString);
+        TimeSpan timeAway = DateTime.Now - lastTime;
+        PlayerPrefs.SetFloat("AllTime", PlayerPrefs.GetFloat("AllTime") + (float)timeAway.TotalMinutes);
+        earnedMoney = Earn(PlayerPrefs.GetFloat("AllTime"));
+
+        if (earnedMoney == 0f)
+        {
+            PlayerPrefs.SetString("DidactitielSwipe", "true");
+            PlayerPrefs.Save();
+            canva.alpha_debut = 0f;
+            canva.targetAlpha = 0f;
+            PlayerPrefs.SetFloat("AllTime", 0f);
+            PlayerPrefs.Save();
+            return;
+        }
+
+        float allMinutes = PlayerPrefs.GetFloat("AllTime");
+        TimeSpan timeSpan = TimeSpan.FromMinutes(allMinutes);
+        temps.GetComponent<TextMeshProUGUI>().text = FormatTime(timeSpan);
+
+        string language = PlayerPrefs.GetString("language", "English");
+        earned.GetComponent<TextMeshProUGUI>().text = (language == "Francais" ? "Total : " : "Total: ") + uniteScript.UniteMethodP(earnedMoney);
+
+        LayoutRebuilder.ForceRebuildLayoutImmediate(earned.GetComponent<TextMeshProUGUI>().rectTransform);
+        canva.alpha_debut = 1f;
+        canva.targetAlpha = 1f;
+        canva.canvasGroup.interactable = true;
+        canva.canvasGroup.blocksRaycasts = true;
+        canva.isVisible = true;
+        PlayerPrefs.SetString("DidactitielSwipe", "false");
+        PlayerPrefs.Save();
     }
 
     string FormatTime(TimeSpan ts)
     {
-        
-        if (PlayerPrefs.GetString("language") == "Francais")
-        jour = "jours";
-        if (PlayerPrefs.GetString("language") == "English")
-        jour = "days";
-        
+        string jour = PlayerPrefs.GetString("language", "English") == "Francais" ? "jours" : "days";
+
         if (ts.TotalDays >= 1)
             return $"{(int)ts.TotalDays} {jour}, {ts.Hours}h {ts.Minutes}m";
         else if (ts.TotalHours >= 1)
@@ -387,74 +585,61 @@ public class startgame : MonoBehaviour
         else
             return $"{ts.Minutes}m {ts.Seconds}s";
     }
+
+    // ========== EARN (optimisé) ==========
     double Earn(double minutes)
     {
+        // Détruit les anciens enfants
         for (int i = listarrive.transform.childCount - 1; i >= 0; i--)
         {
             Destroy(listarrive.transform.GetChild(i).gameObject);
         }
+
         speed = 0f;
         heat = 0f;
 
-        // Parcours tous les enfants directs
-        foreach (Transform child in canvasTransform)
+        foreach (var miner in activeMiners.Values)
         {
-            if (PlayerPrefs.GetString(child.name + "NomImageEnfant") != "")
+            if (string.IsNullOrEmpty(miner.spriteName)) continue;
+
+            if (!serveurByTexture.TryGetValue(miner.spriteName, out Serveur serveur)) continue;
+
+            // Chaleur
+            if (serveur.heat > 0)
             {
-                string spriteName = PlayerPrefs.GetString(child.name + "NomImageEnfant");
-                int upgradespeed = PlayerPrefs.GetInt(child.name + "UpSpeedEnfant", 0);
-                int upgradeheat = PlayerPrefs.GetInt(child.name + "UpHeatEnfant", 0);
-                TextAsset path = Resources.Load<TextAsset>("Mineur_data");
-                string json = path.text;
-
-                ServeursList data = JsonUtility.FromJson<ServeursList>(json);
-
-                foreach (var serveur in data.serveurs)
-                {
-                    if (serveur.texture2D == spriteName)
-                    {
-                        if (serveur.heat > 0)
-                        {
-                            heat += serveur.heat - (serveur.heat * GetValueHeat(upgradeheat));
-                        }
-                        else
-                        {
-                            heat += serveur.heat + (serveur.heat * GetValueHeat(upgradeheat));
-                        }
-                        speed += serveur.vitesse + (serveur.vitesse * GetValueSpeed(upgradespeed));
-                        double speedtemps = (serveur.vitesse + (serveur.vitesse * GetValueSpeed(upgradespeed))) * minutes / (1f + 0.0005f * minutes);
-                        addtolistarrive(serveur.texture2D, upgradespeed, upgradeheat, speedtemps / 10f);
-
-                    }
-                }
+                heat += serveur.heat * (1 - GetValueHeat(miner.upgradeHeat));
+            }
+            else
+            {
+                heat += serveur.heat * (1 + GetValueHeat(miner.upgradeHeat));
             }
 
-
-
+            // Vitesse
+            double speedValue = serveur.vitesse * (1 + GetValueSpeed(miner.upgradeSpeed));
+            speed += speedValue;
+            double speedtemps = speedValue * minutes / (1f + 0.0005f * minutes);
+            addtolistarrive(serveur.texture2D, miner.upgradeSpeed, miner.upgradeHeat, speedtemps / 10f);
         }
 
         if (heat > 120)
         {
             return 0f;
         }
-        
-        return (double)((speed * minutes / (1f + 0.0005f * minutes)) / 10f);
 
+        return (speed * minutes / (1f + 0.0005f * minutes)) / 10f;
     }
 
-    private void addtolistarrive(string Name,int speed, int heat, double speeddumineur)
+    // ========== ADD TO LIST ARRIVE ==========
+    private void addtolistarrive(string Name, int speed, int heat, double speeddumineur)
     {
-
         GameObject instance = Instantiate(prefabarrive, listarrive.transform);
         ApplyImage(Name, instance, speed, heat);
         instance.transform.Find("object").Find("prix").GetComponent<TextMeshProUGUI>().text = uniteScript.UniteMethodP(speeddumineur);
         LayoutRebuilder.ForceRebuildLayoutImmediate(instance.transform.Find("object").Find("prix").GetComponent<TextMeshProUGUI>().rectTransform);
-
     }
+
     private void ApplyImage(string Name, GameObject pref, int speed, int heat)
     {
-
-
         if (pref == null)
         {
             Debug.LogError("GameObject 'pref' introuvable !");
@@ -473,23 +658,27 @@ public class startgame : MonoBehaviour
         Sprite loaded = Resources.Load<Sprite>(Name);
         if (loaded == null)
         {
-
             return;
         }
 
         if (test != null) test.SetSprite(loaded);
         else imageComp.sprite = loaded;
-        if (GetCellFromTexture(Name) == 1)
-        {
-            pref.transform.Find("Image").GetComponent<RectTransform>().sizeDelta = new Vector2(68, 58);
-        }
-        else if (GetCellFromTexture(Name) == 2)
-        {
-            pref.transform.Find("Image").GetComponent<RectTransform>().sizeDelta = new Vector2(140, 58);
-        }
-        Applyupdate(pref, speed, heat);
 
+        if (serveurByTexture.TryGetValue(Name, out Serveur serveur))
+        {
+            if (serveur.cell == 1)
+            {
+                pref.transform.Find("Image").GetComponent<RectTransform>().sizeDelta = new Vector2(68, 58);
+            }
+            else if (serveur.cell == 2)
+            {
+                pref.transform.Find("Image").GetComponent<RectTransform>().sizeDelta = new Vector2(140, 58);
+            }
+        }
+
+        Applyupdate(pref, speed, heat);
     }
+
     private void Applyupdate(GameObject pref, int speed, int heat)
     {
         Image up1 = pref.transform.Find("Image").Find("list upgrade").Find("up1").GetComponent<Image>();
@@ -503,10 +692,9 @@ public class startgame : MonoBehaviour
         int upgrade = 0;
         for (int i = 0; i < speed; i++)
         {
-            upgrade = upgrade + 1;
+            upgrade++;
             if (upgrade == 1)
             {
-
                 up1.sprite = upspeed;
                 up1.color = new Color(1f, 1f, 1f, 1f);
             }
@@ -521,9 +709,10 @@ public class startgame : MonoBehaviour
                 up3.color = new Color(1f, 1f, 1f, 1f);
             }
         }
+
         for (int i = 0; i < heat; i++)
         {
-            upgrade = upgrade + 1;
+            upgrade++;
             if (upgrade == 1)
             {
                 up1.sprite = upheat;
@@ -541,26 +730,9 @@ public class startgame : MonoBehaviour
             }
         }
     }
-    private float GetCellFromTexture(string texture2DName)
-    {
-        TextAsset path = Resources.Load<TextAsset>("Mineur_data");
-        string json = path.text;
 
-
-        ServeursList data = JsonUtility.FromJson<ServeursList>(json);
-
-        if (data == null || data.serveurs == null) return 0;
-
-        foreach (var serveur in data.serveurs)
-        {
-
-            if (serveur.texture2D == texture2DName)
-                return serveur.cell;
-        }
-        return 0;
-    }
+    // ========== BUTTON ==========
     public void Button()
-
     {
         LancerAnimationPiece();
 
@@ -570,45 +742,11 @@ public class startgame : MonoBehaviour
         PlayerPrefs.Save();
         audioarrive = gameObject.AddComponent<AudioSource>();
         audioarrive.clip = arrivebutton;
-        audioarrive.volume = 0.3f * PlayerPrefs.GetFloat("sons");
+        audioarrive.volume = 0.3f * cachedSonVolume;
         audioarrive.Play();
-
     }
 
-    public void Click()
-
-    {
-            PlayerPrefs.SetString("Clicktotaldujour", (double.Parse(PlayerPrefs.GetString("Clicktotaldujour", "0")) + 1).ToString());
-            PlayerPrefs.Save();
-        if (float.Parse(PlayerPrefs.GetString("Click")) <= 30f)
-        {
-            PlayerPrefs.SetString("Click", (float.Parse(PlayerPrefs.GetString("Click")) + 0.8f).ToString());
-            PlayerPrefs.Save();
-
-        }
-    }
-    float GetValueSpeed(int input)
-    {
-        switch (input)
-        {
-            case 0: return 0f;
-            case 1: return 0.2f;
-            case 2: return 0.5f;
-            case 3: return 1f;
-            default: return 0f; // valeur par défaut au cas où
-        }
-    }
-        float GetValueHeat(int input)
-    {
-        switch (input)
-        {
-            case 0: return 0f;
-            case 1: return 0.1f;
-            case 2: return 0.25f;
-            case 3: return 0.5f;
-            default: return 0f; // valeur par défaut au cas où
-        }
-    }
+    // ========== LANCER ANIMATION PIÈCE ==========
     private void LancerAnimationPiece()
     {
         GameObject pieceInstance = Instantiate(piecePrefab, canvasTransform);
@@ -618,19 +756,12 @@ public class startgame : MonoBehaviour
         pieceInstance.GetComponent<PieceVolante>().fadeDuration = 1f;
         pieceInstance.transform.GetComponent<RectTransform>().sizeDelta = new Vector2(3, 3);
 
-        // Position de base : position de l'objet qui a ce script
         Vector3 basePos = departargent.transform.position;
-
-        // Ajout d'un décalage aléatoire (par exemple entre -20 et -5 en x, et entre 5 et 20 en y)
-        float offsetX = UnityEngine.Random.Range(-0.5f, -0.2f);  // un peu à gauche (valeurs négatives)
-        float offsetY = UnityEngine.Random.Range(0.2f, 0.5f);    // un peu au-dessus
-
+        float offsetX = UnityEngine.Random.Range(-0.5f, -0.2f);
+        float offsetY = UnityEngine.Random.Range(0.2f, 0.5f);
         Vector3 randomStartPos = basePos + new Vector3(offsetX, offsetY, 0);
 
-        // Affecte la position de départ de la pièce
         pieceRect.position = randomStartPos;
-
-        // Définit la position cible
         pieceInstance.GetComponent<PieceVolante>().targetPosition = argent.transform.position;
     }
 }

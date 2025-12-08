@@ -11,6 +11,7 @@ public class Save : MonoBehaviour
     private int upgrade = 0;
     public Sprite upspeed;
     public Sprite upheat;
+    public startgame startgame;
 
     void Update()
     {
@@ -86,15 +87,17 @@ public class Save : MonoBehaviour
                     }
                 }
                 // Si le nom de l'image a changé
-                if (nomImage != dernierNomImage || different || derniervie != vieactuelle)
+                if (nomImage != dernierNomImage || different)
                 {
+                    startgame.MarkDirty();
+                    
                     dernierNomImage = nomImage;
                     derniervie = vie.fillAmount;
                     dernierupgradedumineur = upgradedumineur;
 
                     // Sauvegarde avec PlayerPrefs
                     PlayerPrefs.SetString(name + "NomImageEnfant", nomImage);
-                    PlayerPrefs.Save();
+                    
                     int speed = 0;
                     int heat = 0;
                     for (int i = 0; i < 3; i++)
@@ -123,7 +126,7 @@ public class Save : MonoBehaviour
         {
             if (attendre)
             {
-
+                startgame.MarkDirty();
                 if (PlayerPrefs.HasKey(name + "NomImageEnfant"))
                 {
                     dernierNomImage = "";
